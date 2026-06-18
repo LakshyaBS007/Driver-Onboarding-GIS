@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Battery Smart · Live Operations GIS</title>
+
+<!-- ============================== LIBRARIES (CDN only) ============================== -->
+<link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<script src="https://unpkg.com/deck.gl@9.0.38/dist.min.js"></script>
+<script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js"></script>
+<script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+
+<style>
+/* ============================== DESIGN TOKENS ============================== */
+:root{
+  --bg:#070b12; --panel:rgba(17,24,38,.72); --panel-solid:#111826;
+  --edge:rgba(120,150,200,.18); --edge-bright:rgba(120,170,255,.45);
+  --text:#e9f0fb; --mute:#8da3c4; --faint:#5d728f;
+  --accent:#4fd1c5; --accent-dim:#2a8a82;
+  --blue:#4a9eff; --orange:#ff9f43; --purple:#a972ff;
+  --red:#ff5c6c; --yellow:#ffd23f; --green:#39d98a;
+  --shadow:0 24px 60px -24px rgba(0,0,0,.85);
+  --r:14px;
+  --mono:"IBM Plex Mono",ui-monospace,"SF Mono",Menlo,monospace;
+  --sans:"Inter","IBM Plex Sans",system-ui,-apple-system,sans-serif;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);overflow:hidden}
+#map{position:fixed;inset:0}
+canvas{outline:none}
+
+/* glass surface shared by all floating panels */
+.glass{
+  background:var(--panel);backdrop-filter:blur(14px) saturate(1.2);
+  -webkit-backdrop-filter:blur(14px) saturate(1.2);
+  border:1px solid var(--edge);border-radius:var(--r);box-shadow:var(--shadow);
+}
+.eyebrow{font:600 10px/1 var(--mono);letter-spacing:.2em;text-transform:uppercase;color:var(--accent)}
+h2.ttl{font:600 15px/1.2 var(--sans);margin:6px 0 0;letter-spacing:-.01em}
+.sub{font:500 11px/1.4 var(--mono);color:var(--mute)}
+
+/* ============================== TOP BAR ============================== */
+#topbar{
+  position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:20;
+  display:flex;align-items:center;gap:8px;padding:8px 10px;
+}
+#topbar .brand{display:flex;flex-direction:column;padding:0 10px 0 4px;border-right:1px solid var(--edge);margin-right:4px}
+#topbar input{
+  width:118px;background:rgba(0,0,0,.35);border:1px solid var(--edge);border-radius:9px;
+  color:var(--text);font:500 12px/1 var(--mono);padding:9px 10px;transition:.15s;
+}
+#topbar input:focus{outline:none;border-color:var(--edge-bright);box-shadow:0 0 0 3px rgba(79,209,197,.12)}
+#topbar input::placeholder{color:var(--faint)}
+.btn{
+  border:1px solid var(--edge);background:rgba(255,255,255,.04);color:var(--text);
+  font:600 12px/1 var(--sans);padding:9px 13px;border-radius:9px;cursor:pointer;transition:.15s;white-space:nowrap;
+}
+.btn:hover{border-color:var(--edge-bright);background:rgba(255,255,255,.08)}
+.btn.accent{background:var(--accent);color:#04201d;border-color:var(--accent)}
+.btn.accent:hover{filter:brightness(1.08)}
+.btn.ghost{padding:9px 11px}
+
+/* ============================== LEFT: LAYERS + FILTERS ============================== */
+#left{position:fixed;top:14px;left:14px;z-index:15;width:236px;max-height:calc(100vh - 28px);
+  display:flex;flex-direction:column;gap:12px;overflow:hidden auto;padding-right:2px}
+#left::-webkit-scrollbar{width:6px}#left::-webkit-scrollbar-thumb{background:var(--edge);border-radius:3px}
+.card{padding:14px}
+.card h3{font:600 12px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--mute);margin:0 0 12px;display:flex;align-items:center;gap:7px}
+.card h3 .ico{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent)}
+
+.row{display:flex;align-items:center;gap:9px;padding:6px 0;font:500 13px/1 var(--sans);cursor:pointer;user-select:none}
+.row input{appearance:none;width:16px;height:16px;border:1.5px solid var(--edge-bright);border-radius:5px;cursor:pointer;position:relative;flex:none;transition:.15s}
+.row input[type=radio]{border-radius:50%}
+.row input:checked{background:var(--accent);border-color:var(--accent)}
+.row input:checked::after{content:"";position:absolute;inset:3px;background:#04201d;border-radius:3px}
+.row input[type=radio]:checked::after{border-radius:50%}
+.row .sw{width:11px;height:11px;border-radius:3px;flex:none;margin-left:auto}
+.row .ct{margin-left:auto;font:600 11px/1 var(--mono);color:var(--mute)}
+.row.dim{opacity:.45}
+
+select{width:100%;background:rgba(0,0,0,.35);color:var(--text);border:1px solid var(--edge);
+  border-radius:8px;padding:8px 9px;font:500 12px/1 var(--mono);margin-top:4px;cursor:pointer}
+select:focus{outline:none;border-color:var(--edge-bright)}
+.flabel{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:11px 0 0;display:block}
+
+/* ============================== RIGHT: LEGEND + SUMMARY ============================== */
+#right{position:fixed;top:14px;right:14px;z-index:15;width:208px;display:flex;flex-direction:column;gap:12px}
+.stat{display:flex;justify-content:space-between;align-items:baseline;padding:7px 0;border-top:1px solid rgba(255,255,255,.05)}
+.stat:first-of-type{border-top:none}
+.stat .k{font:500 12px/1 var(--sans);color:var(--mute)}
+.stat .v{font:700 15px/1 var(--mono);letter-spacing:-.02em}
+.stat .v.sm{font-size:12px;font-weight:600;color:var(--accent)}
+.leg{display:flex;align-items:center;gap:9px;padding:5px 0;font:500 12px/1.3 var(--sans)}
+.leg .dot{width:11px;height:11px;border-radius:50%;flex:none}
+.leg .hx{width:12px;height:12px;flex:none;clip-path:polygon(25% 5%,75% 5%,100% 50%,75% 95%,25% 95%,0 50%);}
+.leg small{color:var(--faint);font:500 10px/1 var(--mono);margin-left:auto}
+.leg-group{margin-top:10px}
+.leg-group:first-child{margin-top:0}
+.leg-h{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin-bottom:5px}
+
+/* ============================== TOOLTIP + POPUP ============================== */
+#tip{position:fixed;z-index:40;pointer-events:none;display:none;max-width:240px;
+  background:rgba(7,13,22,.97);border:1px solid var(--edge-bright);border-radius:9px;padding:8px 10px;
+  font:500 11px/1.5 var(--mono);box-shadow:var(--shadow)}
+#tip b{color:var(--accent)}
+
+#inspector{position:fixed;top:0;right:0;height:100vh;width:360px;z-index:35;transform:translateX(105%);
+  transition:transform .32s cubic-bezier(.4,0,.2,1);display:flex;flex-direction:column;border-radius:0;
+  border-left:1px solid var(--edge-bright);border-top:none;border-right:none;border-bottom:none}
+#inspector.open{transform:translateX(0)}
+#inspector header{padding:18px 20px 14px;border-bottom:1px solid var(--edge);display:flex;align-items:flex-start;gap:10px}
+#inspector header .x{margin-left:auto;cursor:pointer;color:var(--mute);font-size:20px;line-height:1;padding:2px 6px;border-radius:6px}
+#inspector header .x:hover{background:rgba(255,255,255,.08);color:var(--text)}
+#inspBody{overflow:auto;padding:8px 20px 24px;flex:1}
+#inspBody::-webkit-scrollbar{width:7px}#inspBody::-webkit-scrollbar-thumb{background:var(--edge);border-radius:4px}
+.isec{margin-top:18px}
+.isec .h{font:600 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:9px;display:flex;align-items:center;gap:7px}
+.isec .h::after{content:"";flex:1;height:1px;background:var(--edge)}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:5px 0;font-size:12.5px;border-bottom:1px solid rgba(255,255,255,.04)}
+.kv .k{color:var(--mute);font-weight:500}
+.kv .v{color:var(--text);font-weight:600;font-family:var(--mono);text-align:right;word-break:break-word}
+.copy{cursor:pointer;border:1px solid var(--edge);background:rgba(255,255,255,.04);border-radius:7px;
+  padding:6px 9px;font:600 11px/1 var(--mono);color:var(--accent);display:inline-flex;gap:6px;align-items:center;margin-top:4px}
+.copy:hover{border-color:var(--edge-bright)}
+.spark{display:flex;align-items:flex-end;gap:4px;height:48px;margin-top:6px}
+.spark .bar{flex:1;background:linear-gradient(180deg,var(--accent),var(--accent-dim));border-radius:3px 3px 0 0;min-height:3px;position:relative}
+.spark .bar span{position:absolute;top:-15px;left:50%;transform:translateX(-50%);font:600 9px/1 var(--mono);color:var(--mute)}
+.spark .bar small{position:absolute;bottom:-15px;left:50%;transform:translateX(-50%);font:500 8px/1 var(--mono);color:var(--faint);white-space:nowrap}
+
+/* ============================== LOADER ============================== */
+#loader{position:fixed;inset:0;z-index:100;background:radial-gradient(circle at 50% 40%,#0c1422,#04070d);
+  display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;transition:opacity .5s}
+#loader.hide{opacity:0;pointer-events:none}
+.ring{width:54px;height:54px;border:3px solid rgba(79,209,197,.15);border-top-color:var(--accent);border-radius:50%;animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#loadTxt{font:600 13px/1 var(--mono);color:var(--mute);letter-spacing:.05em}
+#loadBar{width:240px;height:4px;background:rgba(255,255,255,.08);border-radius:3px;overflow:hidden}
+#loadBar i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s;box-shadow:0 0 12px var(--accent)}
+.loadBrand{font:700 20px/1 var(--sans);letter-spacing:-.02em}
+.loadBrand b{color:var(--accent)}
+
+/* ============================== TOASTS ============================== */
+#toasts{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:60;display:flex;flex-direction:column;gap:8px;align-items:center}
+.toast{background:rgba(7,13,22,.95);border:1px solid var(--edge-bright);border-radius:10px;padding:10px 15px;
+  font:600 12px/1.3 var(--sans);box-shadow:var(--shadow);animation:rise .3s ease;max-width:380px}
+.toast.warn{border-color:var(--orange)}.toast.warn b{color:var(--orange)}
+.toast.err{border-color:var(--red)}.toast.err b{color:var(--red)}
+.toast.ok{border-color:var(--green)}.toast.ok b{color:var(--green)}
+@keyframes rise{from{transform:translateY(12px);opacity:0}}
+
+/* ============================== MINI MAP + DEV ============================== */
+#mini{position:fixed;bottom:14px;right:14px;z-index:14;width:200px;height:140px;border-radius:12px;overflow:hidden;
+  border:1px solid var(--edge);box-shadow:var(--shadow);transition:.3s}
+#mini.collapsed{height:30px}
+#mini .mh{position:absolute;top:0;left:0;right:0;height:30px;z-index:2;background:rgba(7,13,22,.85);
+  display:flex;align-items:center;padding:0 10px;font:600 10px/1 var(--mono);letter-spacing:.12em;color:var(--mute);cursor:pointer;border-bottom:1px solid var(--edge)}
+#mini .mh .tg{margin-left:auto;color:var(--accent)}
+#miniMap{position:absolute;top:30px;left:0;right:0;bottom:0}
+
+#dev{position:fixed;bottom:14px;left:14px;z-index:60;width:200px;padding:12px;display:none;font-family:var(--mono)}
+#dev.show{display:block}
+#dev .dh{font:600 10px/1 var(--mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:9px}
+#dev .dk{display:flex;justify-content:space-between;font-size:11px;padding:3px 0;color:var(--mute)}
+#dev .dk b{color:var(--text);font-weight:600}
+
+.hint{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:10;
+  font:500 10px/1 var(--mono);color:var(--faint);letter-spacing:.05em;pointer-events:none;opacity:.7}
+@media (max-width:880px){#mini,.hint{display:none}#left,#right{width:200px}}
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<!-- TOP BAR : brand + coordinate search -->
+<div id="topbar" class="glass">
+  <div class="brand">
+    <span class="eyebrow">Battery Smart</span>
+    <span class="sub" style="margin-top:3px">Live Ops GIS</span>
+  </div>
+  <input id="qLat" placeholder="lat" inputmode="decimal" />
+  <input id="qLng" placeholder="lng" inputmode="decimal" />
+  <input id="qSearch" placeholder="search id / city / zone…" style="width:170px" />
+  <button class="btn accent" id="goBtn">Go</button>
+  <button class="btn ghost" id="clrBtn" title="Clear marker & selection">Clear</button>
+  <button class="btn ghost" id="shotBtn" title="Export PNG">⤓</button>
+</div>
+
+<!-- LEFT : layers + filters -->
+<div id="left">
+  <div class="card glass">
+    <h3><span class="ico"></span>Layers</h3>
+    <label class="row"><input type="checkbox" id="lyH3" checked /> H3 Clusters</label>
+    <div style="padding:2px 0 8px 25px">
+      <label class="row" style="padding:4px 0"><input type="radio" name="h3r" id="h3r7" checked /> H3ID7 <span class="ct" id="ctH3a">·</span></label>
+      <label class="row" style="padding:4px 0"><input type="radio" name="h3r" id="h3r6" /> H3ID6 <span class="ct" id="ctH3b">·</span></label>
+    </div>
+    <label class="row"><input type="checkbox" id="lyStations" checked /> Active Stations <span class="ct" id="ctStations">·</span></label>
+    <label class="row"><input type="checkbox" id="lyDrivers" checked /> Drivers <span class="ct" id="ctDrivers">·</span></label>
+    <label class="row"><input type="checkbox" id="lyDark" checked /> Darkstores <span class="ct" id="ctDark">·</span></label>
+  </div>
+
+  <div class="card glass" id="filterCard">
+    <h3><span class="ico"></span>Driver Filters</h3>
+    <div id="filterMount"><div class="sub">Loading filters…</div></div>
+  </div>
+</div>
+
+<!-- RIGHT : summary + legend -->
+<div id="right">
+  <div class="card glass">
+    <h3><span class="ico"></span>Summary</h3>
+    <div class="stat"><span class="k">Stations</span><span class="v" id="sStations">—</span></div>
+    <div class="stat"><span class="k">Drivers</span><span class="v" id="sDrivers">—</span></div>
+    <div class="stat"><span class="k">Darkstores</span><span class="v" id="sDark">—</span></div>
+    <div class="stat"><span class="k">H3 layer</span><span class="v sm" id="sH3layer">—</span></div>
+    <div class="stat"><span class="k">Hexagons</span><span class="v" id="sHex">—</span></div>
+    <div class="stat"><span class="k">Updated</span><span class="v sm" id="sTime">—</span></div>
+  </div>
+
+  <div class="card glass">
+    <h3><span class="ico"></span>Legend</h3>
+    <div class="leg-group">
+      <div class="leg-h">Stations · L28 SBD</div>
+      <div class="leg"><span class="dot" style="background:var(--red)"></span>Low <small>&lt;2</small></div>
+      <div class="leg"><span class="dot" style="background:var(--orange)"></span>Fair <small>2–3</small></div>
+      <div class="leg"><span class="dot" style="background:var(--yellow)"></span>Good <small>3–4</small></div>
+      <div class="leg"><span class="dot" style="background:var(--green)"></span>Strong <small>4+</small></div>
+    </div>
+    <div class="leg-group">
+      <div class="leg-h">Drivers · Vehicle</div>
+      <div class="leg"><span class="dot" style="background:var(--blue)"></span>E-2W</div>
+      <div class="leg"><span class="dot" style="background:var(--orange)"></span>E-Rickshaw</div>
+    </div>
+    <div class="leg-group">
+      <div class="leg-h">Other</div>
+      <div class="leg"><span class="hx" style="background:var(--accent)"></span>Cluster <small>sheet color</small></div>
+      <div class="leg"><span class="dot" style="background:var(--purple)"></span>Darkstore</div>
+    </div>
+  </div>
+</div>
+
+<!-- INSPECTOR : right-side cluster/feature detail -->
+<aside id="inspector" class="glass">
+  <header>
+    <div><span class="eyebrow" id="inspKind">Cluster</span><h2 class="ttl" id="inspTitle">—</h2></div>
+    <span class="x" id="inspClose">×</span>
+  </header>
+  <div id="inspBody"></div>
+</aside>
+
+<!-- MINI MAP -->
+<div id="mini" class="collapsed">
+  <div class="mh" id="miniHead">OVERVIEW<span class="tg" id="miniTg">▴</span></div>
+  <div id="miniMap"></div>
+</div>
+
+<!-- DEV PANEL -->
+<div id="dev" class="glass">
+  <div class="dh">Performance · Ctrl+Shift+D</div>
+  <div class="dk">FPS<b id="dFps">—</b></div>
+  <div class="dk">Render<b id="dRender">—</b></div>
+  <div class="dk">Fetch<b id="dFetch">—</b></div>
+  <div class="dk">Layers<b id="dLayers">—</b></div>
+  <div class="dk">Refresh<b id="dRefresh">—</b></div>
+  <div class="dk">Features<b id="dFeat">—</b></div>
+</div>
+
+<div id="tip"></div>
+<div id="toasts"></div>
+<div class="hint">F search · L layers · R refresh · Esc close · Ctrl+Shift+D dev</div>
+
+<!-- LOADER -->
+<div id="loader">
+  <div class="loadBrand">Battery <b>Smart</b></div>
+  <div class="ring"></div>
+  <div id="loadBar"><i></i></div>
+  <div id="loadTxt">Initialising…</div>
+</div>
+
+<script>
+/* =============================================================================
+   BATTERY SMART · LIVE OPS GIS  —  application logic
+   Modular, dependency-light (deck.gl + MapLibre + h3-js + PapaParse).
+   ============================================================================= */
+"use strict";
+
+/* ============================== 1. CONFIG ============================== */
+const CONFIG = {
+  refreshInterval: 300000,            // 5 minutes
+  initialView: { longitude: 80, latitude: 23, zoom: 4.2, pitch: 0, bearing: 0 },
+  basemap: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+  csv: {
+    h3id7:      "https://docs.google.com/spreadsheets/d/e/2PACX-1vRK9vHbYDa035ogycEx34DcgJ4pKF8DPJTnq0IXC_3Vymz7M1_M9yTFtFkHabph3zhPIaCd3K6BkDei/pub?gid=1271683754&single=true&output=csv",
+    h3id6:      "https://docs.google.com/spreadsheets/d/e/2PACX-1vRK9vHbYDa035ogycEx34DcgJ4pKF8DPJTnq0IXC_3Vymz7M1_M9yTFtFkHabph3zhPIaCd3K6BkDei/pub?gid=228728943&single=true&output=csv",
+    stations:   "https://docs.google.com/spreadsheets/d/e/2PACX-1vRK9vHbYDa035ogycEx34DcgJ4pKF8DPJTnq0IXC_3Vymz7M1_M9yTFtFkHabph3zhPIaCd3K6BkDei/pub?gid=1740971281&single=true&output=csv",
+    drivers:    "https://docs.google.com/spreadsheets/d/e/2PACX-1vRK9vHbYDa035ogycEx34DcgJ4pKF8DPJTnq0IXC_3Vymz7M1_M9yTFtFkHabph3zhPIaCd3K6BkDei/pub?gid=2010339937&single=true&output=csv",
+    darkstores: "https://docs.google.com/spreadsheets/d/e/2PACX-1vRK9vHbYDa035ogycEx34DcgJ4pKF8DPJTnq0IXC_3Vymz7M1_M9yTFtFkHabph3zhPIaCd3K6BkDei/pub?gid=375875219&single=true&output=csv"
+  },
+  // field-name candidates — first match wins, so sheets can rename without code edits
+  fields: {
+    lat:   ["Latitude","latitude","lat","Lat","LAT","Lattitude"],
+    lng:   ["Longitude","longitude","lng","Lng","long","Long","LONG","lon"],
+    h3:    ["H3 ID","H3ID","H3_ID","h3","h3_id","H3 Index","H3Index","Hexagon","h3id7","h3id6","H3ID7","H3ID6"],
+    color: ["Cluster Color","Cluster Colour","cluster_color","Color","Colour","ClusterColor"],
+    batteries: ["Batteries","batteries","Battery Count","BatteryCount","No of Batteries","Batteries Count"],
+    sbd:   ["L28 SBD","L28SBD","SBD","l28_sbd","L28 Sbd","L28sbd"],
+    vehicle: ["Vehicle Type","VehicleType","vehicle_type","Vehicle","vehicle"],
+    month: ["MonthName","Month Name","Month","month","monthname","Onboarding Month","OnboardMonth"],
+    stationId: ["Station ID","StationID","station_id","Station Id","StationId","ID","Id"],
+    driverId: ["Driver ID","DriverID","driver_id","Driver Id","DriverId","ID","Id"],
+    city:  ["City","city","CITY"],
+    zone:  ["Zone","zone","ZONE","Region","region"]
+  }
+};
+
+/* ============================== 11. UTILITIES ============================== */
+const $  = (s) => document.querySelector(s);
+const $$ = (s) => Array.from(document.querySelectorAll(s));
+
+/** pick the first present, non-empty field from a row given candidate names */
+function pick(row, candidates){
+  for (const c of candidates) if (row[c] !== undefined && row[c] !== null && row[c] !== "") return row[c];
+  // case-insensitive fallback
+  const lower = Object.fromEntries(Object.keys(row).map(k => [k.toLowerCase().trim(), k]));
+  for (const c of candidates){ const hit = lower[c.toLowerCase().trim()]; if (hit && row[hit] !== "") return row[hit]; }
+  return undefined;
+}
+const num = (v) => { const n = parseFloat(String(v ?? "").replace(/[, ₹]/g,"")); return Number.isFinite(n) ? n : null; };
+const isLat = (n) => n !== null && n >= -90  && n <= 90  && n !== 0;
+const isLng = (n) => n !== null && n >= -180 && n <= 180 && n !== 0;
+const fmt = (n) => n === null || n === undefined ? "—" : Number(n).toLocaleString();
+const hhmmss = (d=new Date()) => d.toTimeString().slice(0,8);
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+/** tiny fast checksum (FNV-1a) over a string */
+function checksum(str){ let h = 0x811c9dc5; for (let i=0;i<str.length;i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h>>>0).toString(16); }
+
+/** "#rrggbb" | "rgb(..)" | "r,g,b" | css name → [r,g,b] (fallback teal) */
+function toRGB(v){
+  if (!v) return [79,209,197];
+  const s = String(v).trim();
+  let m = s.match(/^#?([0-9a-f]{6})$/i);
+  if (m){ const n = parseInt(m[1],16); return [(n>>16)&255,(n>>8)&255,n&255]; }
+  m = s.match(/^#?([0-9a-f]{3})$/i);
+  if (m){ const h=m[1]; return [parseInt(h[0]+h[0],16),parseInt(h[1]+h[1],16),parseInt(h[2]+h[2],16)]; }
+  m = s.match(/(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+  if (m) return [+m[1],+m[2],+m[3]];
+  const named = {red:[255,92,108],green:[57,217,138],blue:[74,158,255],orange:[255,159,67],
+    yellow:[255,210,63],purple:[169,114,255],teal:[79,209,197],grey:[150,160,175],gray:[150,160,175]};
+  return named[s.toLowerCase()] || [79,209,197];
+}
+
+function toast(msg, kind="ok", ms=4200){
+  const el = document.createElement("div");
+  el.className = "toast " + kind;
+  el.innerHTML = msg;
+  $("#toasts").appendChild(el);
+  setTimeout(() => { el.style.opacity = "0"; el.style.transition="opacity .4s"; setTimeout(()=>el.remove(),400); }, ms);
+}
+
+/* ============================== APP STATE ============================== */
+const STATE = {
+  raw:   { h3id7:[], h3id6:[], stations:[], drivers:[], darkstores:[] },
+  sums:  {},                       // checksum per dataset
+  activeH3: "h3id7",
+  layersOn: { h3:true, stations:true, drivers:true, darkstores:true },
+  filters: {},                     // dynamic driver filters {field:value}
+  monthField: null,                // detected month column for drivers
+  latestMonth: null,
+  selected: null,                  // {kind,id,object}
+  userMoved: false,                // smart auto-fit guard
+  fittedOnce: false,
+  searchMarker: null,
+  perf: { fetchMs:0, renderMs:0, refreshMs:0, fps:0 }
+};
+
+let deckOverlay, map, miniMap;
+
+/* ============================== 2. CSV LOADER + 3. CACHE ============================== */
+async function loadCSV(url){
+  const bust = (url.includes("?") ? "&" : "?") + "_t=" + Date.now();
+  const res = await fetch(url + bust, { cache:"no-store" });
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const text = await res.text();
+  const parsed = Papa.parse(text, { header:true, skipEmptyLines:"greedy", dynamicTyping:false });
+  return { rows: parsed.data.filter(r => Object.keys(r).length > 1), sum: checksum(text) };
+}
+
+/** Load all datasets in parallel; tolerate individual failures. Returns set of changed keys. */
+async function loadAll({ initial=false } = {}){
+  const t0 = performance.now();
+  const keys = Object.keys(CONFIG.csv);
+  let done = 0;
+  const changed = new Set();
+
+  const results = await Promise.allSettled(keys.map(async (k) => {
+    const { rows, sum } = await loadCSV(CONFIG.csv[k]);
+    done++; setProgress(done / keys.length, `Loaded ${k} (${rows.length})`);
+    return { k, rows, sum };
+  }));
+
+  results.forEach((r, i) => {
+    const k = keys[i];
+    if (r.status === "fulfilled"){
+      if (STATE.sums[k] !== r.value.sum){      // checksum changed → update + mark dirty
+        STATE.raw[k] = r.value.rows;
+        STATE.sums[k] = r.value.sum;
+        changed.add(k);
+      }
+    } else {
+      console.warn("dataset failed:", k, r.reason);
+      if (initial) toast(`<b>${k}</b> failed to load — continuing without it`, "warn");
+      else toast(`<b>${k}</b> refresh failed — keeping last data`, "warn");
+    }
+  });
+
+  STATE.perf.fetchMs = Math.round(performance.now() - t0);
+  return changed;
+}
+
+/* ============================== 4. DATA PARSER ============================== */
+/** Detect all "DA(...)" monthly columns and sort chronologically. */
+function detectDAColumns(rows){
+  if (!rows.length) return [];
+  const cols = Object.keys(rows[0]).filter(k => /^DA\s*\(/i.test(k.trim()));
+  const MON = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+  const rank = (c) => { const m = c.match(/([A-Za-z]{3})[^\d]*(\d{2,4})/); if(!m) return 0;
+    const mo = MON[m[1].toLowerCase()] ?? 0; let y = +m[2]; if (y<100) y += 2000; return y*12 + mo; };
+  return cols.sort((a,b) => rank(a) - rank(b));
+}
+
+/** Detect newest MonthName among drivers (chronological, not alphabetical). */
+function detectLatestMonth(rows, field){
+  if (!field) return null;
+  const MON = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+  const rank = (s) => { const m = String(s).match(/([A-Za-z]{3,})[^\d]*(\d{2,4})/);
+    if(!m) return -1; const mo = MON[m[1].slice(0,3).toLowerCase()] ?? 0; let y=+m[2]; if(y<100)y+=2000; return y*12+mo; };
+  let best=null, bestR=-Infinity;
+  for (const r of rows){ const v=r[field]; if(!v) continue; const rk=rank(v); if(rk>bestR){bestR=rk;best=v;} }
+  return best;
+}
+
+/** Normalise H3 rows → {h3, color[rgb], props, da[]} keeping ALL original props for popups. */
+function parseH3(rows){
+  const da = detectDAColumns(rows);
+  return rows.map(r => {
+    const h3 = pick(r, CONFIG.fields.h3);
+    if (!h3 || !(window.h3 && h3.isValidCell ? h3.isValidCell(h3) : true)) {}
+    return { h3:String(h3||"").trim(), color: toRGB(pick(r, CONFIG.fields.color)), props:r, da };
+  }).filter(d => d.h3 && window.h3.isValidCell(d.h3));
+}
+
+/** Normalise point rows → {lng,lat,props}. Invalid coords dropped. */
+function parsePoints(rows){
+  const out = [];
+  for (const r of rows){
+    const lat = num(pick(r, CONFIG.fields.lat));
+    const lng = num(pick(r, CONFIG.fields.lng));
+    if (isLat(lat) && isLng(lng)) out.push({ lng, lat, props:r });
+  }
+  return out;
+}
+
+/* ============================== 5. LAYER FACTORY ============================== */
+const STATION_COLORS = { low:[255,92,108], fair:[255,159,67], good:[255,210,63], strong:[57,217,138] };
+function stationColor(sbd){
+  const v = num(sbd);
+  if (v === null) return [150,160,175];
+  if (v < 2) return STATION_COLORS.low;
+  if (v < 3) return STATION_COLORS.fair;
+  if (v < 4) return STATION_COLORS.good;
+  return STATION_COLORS.strong;
+}
+const VEHICLE_COLORS = { "e-2w":[74,158,255], "e2w":[74,158,255], "2w":[74,158,255],
+  "e-rickshaw":[255,159,67], "erickshaw":[255,159,67], "rickshaw":[255,159,67] };
+function vehicleColor(v){ const k=String(v||"").toLowerCase().replace(/[\s_]/g,"-"); return VEHICLE_COLORS[k] || VEHICLE_COLORS[k.replace(/-/g,"")] || [150,160,175]; }
+
+function buildLayers(){
+  const L = [];
+  const sel = STATE.selected;
+
+  /* ---- H3 hexagons (only the active resolution) ---- */
+  if (STATE.layersOn.h3){
+    const data = parseH3(STATE.raw[STATE.activeH3]);
+    $("#sHex").textContent = fmt(data.length);
+    L.push(new deck.H3HexagonLayer({
+      id: "h3-" + STATE.activeH3,
+      data, pickable:true, wireframe:false, filled:true, extruded:false,
+      stroked:true, lineWidthMinPixels:1,
+      getHexagon: d => d.h3,
+      getFillColor: d => { const a = (sel && sel.kind==="cluster" && sel.id===d.h3) ? 235 : 153; return [d.color[0],d.color[1],d.color[2],a]; },
+      getLineColor: d => (sel && sel.kind==="cluster" && sel.id===d.h3) ? [255,255,255,255] : [0,0,0,160],
+      getLineWidth: d => (sel && sel.kind==="cluster" && sel.id===d.h3) ? 3 : 1,
+      updateTriggers: { getFillColor:[sel&&sel.id], getLineColor:[sel&&sel.id], getLineWidth:[sel&&sel.id] },
+      onClick: info => info.object && selectFeature("cluster", info.object.h3, info.object),
+      onHover: info => hover(info, info.object ? `<b>Cluster</b> ${info.object.h3}` : null)
+    }));
+  }
+
+  /* ---- Active stations ---- */
+  if (STATE.layersOn.stations){
+    const data = parsePoints(STATE.raw.stations);
+    L.push(new deck.ScatterplotLayer({
+      id:"stations", data, pickable:true, stroked:true, filled:true,
+      radiusUnits:"pixels", radiusMinPixels:4, radiusMaxPixels:34, lineWidthMinPixels:1,
+      getPosition: d => [d.lng, d.lat],
+      getRadius: d => { const b = num(pick(d.props, CONFIG.fields.batteries)); return b ? Math.max(5, Math.sqrt(b)*2.4) : 6; },
+      getFillColor: d => { const c = stationColor(pick(d.props, CONFIG.fields.sbd)); const on = sel&&sel.kind==="station"&&sel.object===d; return [c[0],c[1],c[2], on?255:200]; },
+      getLineColor: d => (sel&&sel.kind==="station"&&sel.object===d) ? [255,255,255,255] : [0,0,0,120],
+      updateTriggers:{ getFillColor:[sel&&sel.object], getLineColor:[sel&&sel.object] },
+      onClick: info => info.object && selectFeature("station", pick(info.object.props,CONFIG.fields.stationId)||"Station", info.object),
+      onHover: info => hover(info, info.object ? `<b>Station</b> ${esc(pick(info.object.props,CONFIG.fields.stationId)||"")}<br>SBD ${esc(pick(info.object.props,CONFIG.fields.sbd)??"—")}` : null)
+    }));
+  }
+
+  /* ---- Drivers (filtered) ---- */
+  if (STATE.layersOn.drivers){
+    const data = applyDriverFilters(parsePoints(STATE.raw.drivers));
+    L.push(new deck.ScatterplotLayer({
+      id:"drivers", data, pickable:true, stroked:false, filled:true,
+      radiusUnits:"pixels", radiusMinPixels:2.5, radiusMaxPixels:7,
+      getPosition: d => [d.lng, d.lat],
+      getRadius: 3.4,
+      getFillColor: d => { const c = vehicleColor(pick(d.props, CONFIG.fields.vehicle)); const on = sel&&sel.kind==="driver"&&sel.object===d; return [c[0],c[1],c[2], on?255:190]; },
+      updateTriggers:{ getFillColor:[sel&&sel.object] },
+      onClick: info => info.object && selectFeature("driver", pick(info.object.props,CONFIG.fields.driverId)||"Driver", info.object),
+      onHover: info => hover(info, info.object ? `<b>Driver</b> ${esc(pick(info.object.props,CONFIG.fields.driverId)||"")}<br>${esc(pick(info.object.props,CONFIG.fields.vehicle)||"")}` : null)
+    }));
+  }
+
+  /* ---- Darkstores ---- */
+  if (STATE.layersOn.darkstores){
+    const data = parsePoints(STATE.raw.darkstores);
+    L.push(new deck.ScatterplotLayer({
+      id:"darkstores", data, pickable:true, stroked:true, filled:true,
+      radiusUnits:"pixels", radiusMinPixels:5, radiusMaxPixels:12, lineWidthMinPixels:1.5,
+      getPosition: d => [d.lng, d.lat], getRadius: 8,
+      getFillColor: d => { const on = sel&&sel.kind==="darkstore"&&sel.object===d; return [169,114,255, on?255:210]; },
+      getLineColor: d => (sel&&sel.kind==="darkstore"&&sel.object===d) ? [255,255,255,255] : [255,255,255,90],
+      updateTriggers:{ getFillColor:[sel&&sel.object], getLineColor:[sel&&sel.object] },
+      onClick: info => info.object && selectFeature("darkstore", "Darkstore", info.object),
+      onHover: info => hover(info, info.object ? `<b>Darkstore</b>` : null)
+    }));
+  }
+
+  /* ---- search marker ---- */
+  if (STATE.searchMarker){
+    L.push(new deck.ScatterplotLayer({
+      id:"search-pin", data:[STATE.searchMarker], stroked:true, filled:true,
+      radiusUnits:"pixels", getRadius:11, radiusMinPixels:11,
+      getPosition:d=>[d.lng,d.lat], getFillColor:[79,209,197,180], getLineColor:[255,255,255,255], lineWidthMinPixels:2
+    }));
+  }
+
+  STATE.perf.layerCount = L.length;
+  return L;
+}
+
+/* ============================== 6. FILTER ENGINE ============================== */
+/** Build dynamic filters from driver data: Vehicle Type, Month (latest/older), + any City/Zone present. */
+function buildFilterUI(){
+  const drivers = STATE.raw.drivers;
+  const mount = $("#filterMount");
+  if (!drivers.length){ mount.innerHTML = `<div class="sub">No driver data.</div>`; return; }
+
+  STATE.monthField = (CONFIG.fields.month.find(f => drivers[0][f] !== undefined)) ||
+                     Object.keys(drivers[0]).find(k => CONFIG.fields.month.map(x=>x.toLowerCase()).includes(k.toLowerCase())) || null;
+  STATE.latestMonth = detectLatestMonth(drivers, STATE.monthField);
+
+  const uniques = (cands) => {
+    const f = cands.find(c => drivers.some(r => r[c] !== undefined && r[c] !== ""));
+    if (!f) return null;
+    const set = [...new Set(drivers.map(r => r[f]).filter(v => v !== undefined && v !== ""))].sort();
+    return { field:f, values:set };
+  };
+
+  let html = "";
+  // Vehicle Type
+  const veh = uniques(CONFIG.fields.vehicle);
+  if (veh){
+    html += `<label class="flabel">Vehicle Type</label><select data-f="${esc(veh.field)}">
+      <option value="">All</option>${veh.values.map(v=>`<option>${esc(v)}</option>`).join("")}</select>`;
+  }
+  // Month → Latest / Older
+  if (STATE.monthField && STATE.latestMonth){
+    html += `<label class="flabel">Month</label><select data-f="__month__">
+      <option value="">All months</option>
+      <option value="latest">Latest · ${esc(STATE.latestMonth)}</option>
+      <option value="older">Older months</option></select>`;
+  }
+  // City / Zone (auto)
+  for (const c of [CONFIG.fields.city, CONFIG.fields.zone]){
+    const u = uniques(c);
+    if (u && u.values.length > 1 && u.values.length <= 60){
+      const label = u.field;
+      html += `<label class="flabel">${esc(label)}</label><select data-f="${esc(u.field)}">
+        <option value="">All</option>${u.values.map(v=>`<option>${esc(v)}</option>`).join("")}</select>`;
+    }
+  }
+  mount.innerHTML = html || `<div class="sub">No filterable fields detected.</div>`;
+
+  mount.querySelectorAll("select").forEach(sel => sel.addEventListener("change", e => {
+    const f = e.target.dataset.f, v = e.target.value;
+    if (v === "") delete STATE.filters[f]; else STATE.filters[f] = v;
+    redraw();
+  }));
+}
+
+function applyDriverFilters(points){
+  const f = STATE.filters; const keys = Object.keys(f);
+  if (!keys.length) return points;
+  return points.filter(p => keys.every(k => {
+    const val = f[k];
+    if (k === "__month__"){
+      const mv = p.props[STATE.monthField];
+      if (val === "latest") return mv === STATE.latestMonth;
+      if (val === "older")  return mv !== STATE.latestMonth;
+      return true;
+    }
+    return String(p.props[k]) === String(val);
+  }));
+}
+
+/* ============================== 7. POPUP / 1. INSPECTOR ============================== */
+function selectFeature(kind, id, object){
+  STATE.selected = { kind, id, object };
+  openInspector(kind, id, object);
+  redraw();
+}
+
+/** Build inspector body fully dynamically from object props. */
+function openInspector(kind, id, object){
+  const insp = $("#inspector");
+  $("#inspKind").textContent = kind[0].toUpperCase()+kind.slice(1);
+  $("#inspTitle").textContent = id || "—";
+  const props = object.props || {};
+  let html = "";
+
+  // copyable H3 id for clusters
+  if (kind === "cluster"){
+    html += `<button class="copy" data-copy="${esc(object.h3)}">⧉ Copy H3 · ${esc(object.h3)}</button>`;
+    // monthly DA sparkline
+    const da = object.da || [];
+    const vals = da.map(c => num(props[c]) || 0);
+    if (vals.length){
+      const mx = Math.max(...vals, 1);
+      html += `<div class="isec"><div class="h">Monthly driver additions</div><div class="spark">`;
+      da.forEach((c,i) => { const label = (c.match(/\(([^)]+)\)/)||[])[1] || c;
+        html += `<div class="bar" style="height:${Math.max(6,vals[i]/mx*100)}%"><span>${vals[i]}</span><small>${esc(label)}</small></div>`; });
+      html += `</div></div>`;
+    }
+    // nearby stations + darkstore counts (within the hexagon's k-ring footprint via centroid distance)
+    html += nearbySection(object.h3);
+  }
+
+  // all properties (dynamic) — DA columns folded into the sparkline already, so skip them in the dump
+  const skip = new Set(kind==="cluster" ? (object.da||[]) : []);
+  html += `<div class="isec"><div class="h">All fields</div>`;
+  for (const [k,v] of Object.entries(props)){
+    if (skip.has(k) || v === "" || v === undefined) continue;
+    html += `<div class="kv"><span class="k">${esc(k)}</span><span class="v">${esc(v)}</span></div>`;
+  }
+  html += `</div>`;
+
+  $("#inspBody").innerHTML = html;
+  insp.classList.add("open");
+  $$("#inspBody .copy").forEach(b => b.addEventListener("click", () => {
+    navigator.clipboard?.writeText(b.dataset.copy); toast("Copied <b>"+esc(b.dataset.copy)+"</b>","ok",1800);
+  }));
+}
+
+/** Count nearby stations & darkstores relative to a cluster centroid. */
+function nearbySection(h3id){
+  try{
+    const [clat, clng] = window.h3.cellToLatLng(h3id);
+    const R = 6; // km radius
+    const within = (arr, fld) => parsePoints(arr).filter(p => haversine(clat,clng,p.lat,p.lng) <= R).length;
+    const st = within(STATE.raw.stations);
+    const ds = within(STATE.raw.darkstores);
+    const onboard = "—";
+    return `<div class="isec"><div class="h">Nearby (≤${R} km)</div>
+      <div class="kv"><span class="k">Stations</span><span class="v">${st}</span></div>
+      <div class="kv"><span class="k">Darkstores</span><span class="v">${ds}</span></div></div>`;
+  }catch(e){ return ""; }
+}
+function haversine(la1,lo1,la2,lo2){
+  const R=6371,d2r=Math.PI/180; const dLa=(la2-la1)*d2r, dLo=(lo2-lo1)*d2r;
+  const a=Math.sin(dLa/2)**2 + Math.cos(la1*d2r)*Math.cos(la2*d2r)*Math.sin(dLo/2)**2;
+  return 2*R*Math.asin(Math.sqrt(a));
+}
+function closeInspector(){ $("#inspector").classList.remove("open"); STATE.selected=null; redraw(); }
+
+/* ============================== hover tooltip ============================== */
+function hover(info, html){
+  const tip = $("#tip");
+  if (info && info.object && html){
+    tip.style.display="block"; tip.innerHTML = html;
+    tip.style.left = (info.x + 14) + "px"; tip.style.top = (info.y + 14) + "px";
+  } else tip.style.display="none";
+}
+
+/* ============================== 8. LEGEND — static in HTML, counts updated here ============================== */
+function updateSummary(){
+  $("#sStations").textContent = fmt(parsePoints(STATE.raw.stations).length);
+  $("#sDrivers").textContent  = fmt(applyDriverFilters(parsePoints(STATE.raw.drivers)).length);
+  $("#sDark").textContent     = fmt(parsePoints(STATE.raw.darkstores).length);
+  $("#sH3layer").textContent  = STATE.activeH3 === "h3id7" ? "H3ID7" : "H3ID6";
+  $("#sTime").textContent     = hhmmss();
+  $("#ctH3a").textContent = fmt(parseH3(STATE.raw.h3id7).length);
+  $("#ctH3b").textContent = fmt(parseH3(STATE.raw.h3id6).length);
+  $("#ctStations").textContent = fmt(parsePoints(STATE.raw.stations).length);
+  $("#ctDrivers").textContent  = fmt(parsePoints(STATE.raw.drivers).length);
+  $("#ctDark").textContent     = fmt(parsePoints(STATE.raw.darkstores).length);
+}
+
+/* ============================== 9. SEARCH CONTROLLER ============================== */
+function goToCoord(){
+  const lat = num($("#qLat").value), lng = num($("#qLng").value);
+  if (!isLat(lat) || !isLng(lng)){ toast("Enter valid lat & lng","warn"); return; }
+  STATE.searchMarker = { lng, lat };
+  STATE.userMoved = true;
+  map.flyTo({ center:[lng,lat], zoom:13, duration:1200 });
+  redraw();
+}
+function clearSearch(){ STATE.searchMarker=null; $("#qLat").value=$("#qLng").value=$("#qSearch").value=""; closeInspector(); redraw(); }
+
+/** Live search by id / city / zone across all datasets; fly to first match + select. */
+function liveSearch(q){
+  q = q.trim().toLowerCase(); if (!q) return;
+  const tryset = [
+    ["station", STATE.raw.stations, CONFIG.fields.stationId],
+    ["driver",  STATE.raw.drivers,  CONFIG.fields.driverId],
+    ["cluster", STATE.raw.h3id7,    CONFIG.fields.h3],
+    ["cluster", STATE.raw.h3id6,    CONFIG.fields.h3]
+  ];
+  // id / h3 match
+  for (const [kind, rows, idFields] of tryset){
+    for (const r of rows){
+      const idv = String(pick(r, idFields) ?? "").toLowerCase();
+      if (idv && idv === q){
+        return focusRow(kind, r);
+      }
+    }
+  }
+  // city / zone partial match across drivers+stations
+  for (const rows of [STATE.raw.drivers, STATE.raw.stations]){
+    for (const r of rows){
+      const cz = String(pick(r,CONFIG.fields.city) ?? "").toLowerCase() + " " + String(pick(r,CONFIG.fields.zone) ?? "").toLowerCase();
+      if (cz.includes(q)){ return focusRow(rows===STATE.raw.drivers?"driver":"station", r); }
+    }
+  }
+  toast("No match for <b>"+esc(q)+"</b>","warn");
+}
+function focusRow(kind, r){
+  STATE.userMoved = true;
+  if (kind === "cluster"){
+    const h3 = String(pick(r,CONFIG.fields.h3)).trim();
+    const [lat,lng] = window.h3.cellToLatLng(h3);
+    map.flyTo({ center:[lng,lat], zoom:11, duration:1100 });
+    selectFeature("cluster", h3, { h3, color:toRGB(pick(r,CONFIG.fields.color)), props:r, da:detectDAColumns([r]) });
+  } else {
+    const lat = num(pick(r,CONFIG.fields.lat)), lng = num(pick(r,CONFIG.fields.lng));
+    if (isLat(lat)&&isLng(lng)) map.flyTo({ center:[lng,lat], zoom:13, duration:1100 });
+    const idF = kind==="station"?CONFIG.fields.stationId:CONFIG.fields.driverId;
+    selectFeature(kind, pick(r,idF)||kind, { lng, lat, props:r });
+  }
+}
+
+/* ============================== 10. REFRESH CONTROLLER ============================== */
+async function refresh({ initial=false } = {}){
+  const t0 = performance.now();
+  const changed = await loadAll({ initial });
+  if (changed.size || initial){
+    if (changed.has("drivers") || initial) buildFilterUI();
+    redraw();
+    updateSummary();
+    if (initial) smartFit();
+    if (!initial && changed.size) toast(`Updated: <b>${[...changed].join(", ")}</b>`, "ok", 3000);
+  } else if (!initial){
+    $("#sTime").textContent = hhmmss();
+  }
+  STATE.perf.refreshMs = Math.round(performance.now() - t0);
+  writeHash();
+}
+
+/* ============================== RENDER ============================== */
+function redraw(){
+  const t0 = performance.now();
+  deckOverlay.setProps({ layers: buildLayers() });
+  STATE.perf.renderMs = Math.round(performance.now() - t0);
+  updateDev();
+}
+
+/* ============================== SMART AUTO-FIT ============================== */
+function smartFit(){
+  if (STATE.userMoved || STATE.fittedOnce) return;
+  const pts = [];
+  parseH3(STATE.raw[STATE.activeH3]).forEach(d => { try{ const [la,lo]=window.h3.cellToLatLng(d.h3); pts.push([lo,la]); }catch(e){} });
+  parsePoints(STATE.raw.stations).forEach(p => pts.push([p.lng,p.lat]));
+  if (pts.length < 2) return;
+  let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+  for (const [x,y] of pts){ minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y); }
+  map.fitBounds([[minX,minY],[maxX,maxY]], { padding:80, duration:900, maxZoom:11 });
+  STATE.fittedOnce = true;
+}
+
+/* ============================== 5b. SHAREABLE STATE (URL hash) ============================== */
+function writeHash(){
+  const c = map.getCenter();
+  const h = { z:+map.getZoom().toFixed(2), lng:+c.lng.toFixed(4), lat:+c.lat.toFixed(4),
+    h3:STATE.activeH3, ly:STATE.layersOn, f:STATE.filters,
+    sel: STATE.selected ? { k:STATE.selected.kind, id:STATE.selected.id } : null };
+  history.replaceState(null,"", "#"+encodeURIComponent(JSON.stringify(h)));
+}
+function readHash(){
+  if (!location.hash || location.hash.length < 2) return null;
+  try{ return JSON.parse(decodeURIComponent(location.hash.slice(1))); }catch(e){ return null; }
+}
+
+/* ============================== SCREENSHOT EXPORT ============================== */
+function exportPNG(){
+  try{
+    map.once("render", () => {
+      const glCanvas = map.getCanvas();
+      const deckCanvas = document.querySelector("#deck-canvas") || document.querySelectorAll("canvas")[1];
+      const out = document.createElement("canvas");
+      out.width = glCanvas.width; out.height = glCanvas.height;
+      const ctx = out.getContext("2d");
+      ctx.drawImage(glCanvas,0,0);
+      if (deckCanvas) try{ ctx.drawImage(deckCanvas,0,0); }catch(e){}
+      const a = document.createElement("a");
+      a.download = "battery-smart-gis-"+Date.now()+".png";
+      a.href = out.toDataURL("image/png"); a.click();
+      toast("Screenshot exported","ok",2200);
+    });
+    map.triggerRepaint();
+  }catch(e){ toast("Export failed (browser canvas security)","err"); }
+}
+
+/* ============================== 7b. DEV PERFORMANCE PANEL ============================== */
+let frames=0, lastFpsT=performance.now();
+function fpsLoop(){
+  frames++; const now=performance.now();
+  if (now - lastFpsT >= 1000){ STATE.perf.fps = frames; frames=0; lastFpsT=now; updateDev(); }
+  requestAnimationFrame(fpsLoop);
+}
+function updateDev(){
+  if (!$("#dev").classList.contains("show")) return;
+  $("#dFps").textContent = STATE.perf.fps;
+  $("#dRender").textContent = STATE.perf.renderMs+" ms";
+  $("#dFetch").textContent = STATE.perf.fetchMs+" ms";
+  $("#dLayers").textContent = STATE.perf.layerCount ?? 0;
+  $("#dRefresh").textContent = STATE.perf.refreshMs+" ms";
+  const feat = parsePoints(STATE.raw.drivers).length + parsePoints(STATE.raw.stations).length + parseH3(STATE.raw[STATE.activeH3]).length;
+  $("#dFeat").textContent = fmt(feat);
+}
+
+/* ============================== LOADER PROGRESS ============================== */
+function setProgress(frac, msg){ $("#loadBar>i").style.width = Math.round(frac*100)+"%"; if (msg) $("#loadTxt").textContent = msg; }
+function hideLoader(){ const l=$("#loader"); l.classList.add("hide"); setTimeout(()=>l.style.display="none",550); }
+
+/* ============================== 12. BOOTSTRAP ============================== */
+async function boot(){
+  // ---- base map ----
+  const restored = readHash();
+  const iv = CONFIG.initialView;
+  map = new maplibregl.Map({
+    container:"map", style:CONFIG.basemap,
+    center: restored ? [restored.lng,restored.lat] : [iv.longitude,iv.latitude],
+    zoom: restored ? restored.z : iv.zoom, attributionControl:false, antialias:true
+  });
+  map.addControl(new maplibregl.NavigationControl({ showCompass:false }), "bottom-left");
+
+  if (restored){
+    STATE.userMoved = true; STATE.fittedOnce = true;
+    if (restored.h3) STATE.activeH3 = restored.h3;
+    if (restored.ly) STATE.layersOn = restored.ly;
+    if (restored.f)  STATE.filters = restored.f;
+    if (restored.h3 === "h3id6") $("#h3r6").checked = true;
+  }
+
+  // ---- deck.gl overlay synced to maplibre ----
+  deckOverlay = new deck.MapboxOverlay({ interleaved:true, layers:[] });
+  map.addControl(deckOverlay);
+
+  // mark manual camera movement (disables auto-fit)
+  map.on("dragstart", () => STATE.userMoved = true);
+  map.on("zoomstart", (e) => { if (e.originalEvent) STATE.userMoved = true; });
+  map.on("moveend", () => { writeHash(); syncMini(); });
+
+  await new Promise(res => map.on("load", res));
+
+  // ---- mini map ----
+  miniMap = new maplibregl.Map({ container:"miniMap", style:CONFIG.basemap,
+    center: map.getCenter(), zoom: Math.max(1, map.getZoom()-4), interactive:false, attributionControl:false });
+
+  wireUI();
+  fpsLoop();
+
+  // ---- first data load ----
+  await refresh({ initial:true });
+  if (restored && restored.sel) { /* selection restore best-effort via search */ liveSearch(restored.sel.id); }
+  hideLoader();
+
+  // ---- auto refresh ----
+  setInterval(() => refresh({ initial:false }), CONFIG.refreshInterval);
+}
+
+/* ============================== UI WIRING ============================== */
+function wireUI(){
+  // layer toggles
+  $("#lyH3").addEventListener("change", e => { STATE.layersOn.h3=e.target.checked; redraw(); writeHash(); });
+  $("#lyStations").addEventListener("change", e => { STATE.layersOn.stations=e.target.checked; redraw(); writeHash(); });
+  $("#lyDrivers").addEventListener("change", e => { STATE.layersOn.drivers=e.target.checked; redraw(); writeHash(); });
+  $("#lyDark").addEventListener("change", e => { STATE.layersOn.darkstores=e.target.checked; redraw(); writeHash(); });
+
+  // H3 resolution radios (preserve viewport)
+  $("#h3r7").addEventListener("change", () => { if($("#h3r7").checked){ STATE.activeH3="h3id7"; redraw(); updateSummary(); writeHash(); }});
+  $("#h3r6").addEventListener("change", () => { if($("#h3r6").checked){ STATE.activeH3="h3id6"; redraw(); updateSummary(); writeHash(); }});
+
+  // search
+  $("#goBtn").addEventListener("click", goToCoord);
+  $("#clrBtn").addEventListener("click", clearSearch);
+  $("#shotBtn").addEventListener("click", exportPNG);
+  $("#qSearch").addEventListener("keydown", e => { if (e.key==="Enter") liveSearch(e.target.value); });
+  [["#qLat"],["#qLng"]].forEach(([s]) => $(s).addEventListener("keydown", e => { if(e.key==="Enter") goToCoord(); }));
+
+  // inspector close
+  $("#inspClose").addEventListener("click", closeInspector);
+
+  // mini map collapse
+  $("#miniHead").addEventListener("click", () => {
+    const m = $("#mini"); m.classList.toggle("collapsed");
+    $("#miniTg").textContent = m.classList.contains("collapsed") ? "▴" : "▾";
+    if (!m.classList.contains("collapsed")) setTimeout(()=>{ miniMap.resize(); syncMini(); },320);
+  });
+
+  // keyboard shortcuts
+  window.addEventListener("keydown", e => {
+    if (e.target.tagName === "INPUT") { if (e.key==="Escape") e.target.blur(); return; }
+    if (e.ctrlKey && e.shiftKey && (e.key==="D"||e.key==="d")){ e.preventDefault(); $("#dev").classList.toggle("show"); updateDev(); return; }
+    if (e.key==="f"||e.key==="F"){ e.preventDefault(); $("#qSearch").focus(); }
+    else if (e.key==="l"||e.key==="L"){ const c=$("#left"); c.style.display = c.style.display==="none"?"flex":"none"; }
+    else if (e.key==="r"||e.key==="R"){ toast("Refreshing…","ok",1500); refresh({initial:false}); }
+    else if (e.key==="Escape"){ closeInspector(); }
+  });
+}
+
+function syncMini(){
+  if (!miniMap || $("#mini").classList.contains("collapsed")) return;
+  miniMap.jumpTo({ center: map.getCenter(), zoom: Math.max(1, map.getZoom()-4) });
+}
+
+/* ---- go ---- */
+window.addEventListener("error", e => console.error("runtime:", e.message));
+boot().catch(err => { console.error(err); $("#loadTxt").textContent = "Init failed — see console"; toast("Startup error: "+esc(err.message),"err",8000); });
+
+</script>
+</body>
+</html>
