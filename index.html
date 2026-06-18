@@ -9,6 +9,7 @@
 <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/deck.gl@9.0.38/dist.min.js"></script>
+<script src="https://unpkg.com/@deck.gl/geo-layers@9.0.38/dist.min.js"></script>
 <script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js"></script>
 <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
@@ -536,18 +537,42 @@ function buildLayers(){
   /* ---- H3 hexagons (only the active resolution) ---- */
   if (STATE.layersOn.h3){
     const data = parseH3(STATE.raw[STATE.activeH3]);
-    L.push(new deck.H3HexagonLayer({
-      id: "h3-" + STATE.activeH3,
-      data, pickable:true, wireframe:false, filled:true, extruded:false,
-      stroked:true, lineWidthUnits:"pixels", lineWidthMinPixels:1,
-      getHexagon: d => d.h3,
-      getFillColor: d => { const a = (sel && sel.kind==="cluster" && sel.id===d.h3) ? 230 : 153; return [d.color[0],d.color[1],d.color[2],a]; },
-      getLineColor: d => (sel && sel.kind==="cluster" && sel.id===d.h3) ? [255,255,255,255] : [12,18,28,200],
-      getLineWidth: d => (sel && sel.kind==="cluster" && sel.id===d.h3) ? 3 : 1,
-      updateTriggers: { getFillColor:[sel&&sel.id], getLineColor:[sel&&sel.id], getLineWidth:[sel&&sel.id] },
-      onClick: info => info.object && selectFeature("cluster", info.object.h3, info.object),
-      onHover: info => hover(info, info.object ? `<b>Cluster</b> ${info.object.h3}` : null)
-    }));
+    const isSel = d => sel && sel.kind==="cluster" && sel.id===d.h3;
+    const fill  = d => { const a = isSel(d) ? 230 : 153; return [d.color[0],d.color[1],d.color[2],a]; };
+    const line  = d => isSel(d) ? [255,255,255,255] : [12,18,28,200];
+    const lw    = d => isSel(d) ? 3 : 1;
+
+    // locate H3HexagonLayer across possible globals (core bundle, geo-layers bundle)
+    const H3Layer = (window.deck && deck.H3HexagonLayer)
+                 || (window.deck && deck.geoLayers && deck.geoLayers.H3HexagonLayer)
+                 || (window.H3HexagonLayer)
+                 || null;
+
+    if (H3Layer){
+      L.push(new H3Layer({
+        id:"h3-"+STATE.activeH3, data, pickable:true, wireframe:false, filled:true, extruded:false,
+        stroked:true, lineWidthUnits:"pixels", lineWidthMinPixels:1,
+        getHexagon: d => d.h3, getFillColor: fill, getLineColor: line, getLineWidth: lw,
+        updateTriggers:{ getFillColor:[sel&&sel.id], getLineColor:[sel&&sel.id], getLineWidth:[sel&&sel.id] },
+        onClick: info => info.object && selectFeature("cluster", info.object.h3, info.object),
+        onHover: info => hover(info, info.object ? `<b>Cluster</b> ${info.object.h3}` : null)
+      }));
+    } else {
+      // FALLBACK — H3HexagonLayer not in bundle: build polygons from h3-js boundaries
+      const poly = data.map(d => {
+        let ring = [];
+        try { ring = window.h3.cellToBoundary(d.h3, true); } catch(e){}  // [lng,lat] pairs
+        return { ...d, polygon: ring };
+      }).filter(d => d.polygon.length >= 3);
+      L.push(new deck.PolygonLayer({
+        id:"h3poly-"+STATE.activeH3, data:poly, pickable:true, stroked:true, filled:true,
+        lineWidthUnits:"pixels", lineWidthMinPixels:1,
+        getPolygon: d => d.polygon, getFillColor: fill, getLineColor: line, getLineWidth: lw,
+        updateTriggers:{ getFillColor:[sel&&sel.id], getLineColor:[sel&&sel.id], getLineWidth:[sel&&sel.id] },
+        onClick: info => info.object && selectFeature("cluster", info.object.h3, info.object),
+        onHover: info => hover(info, info.object ? `<b>Cluster</b> ${info.object.h3}` : null)
+      }));
+    }
   }
 
   /* ---- Active stations ---- */
