@@ -83,7 +83,13 @@ h2.ttl{font:600 15px/1.2 var(--sans);margin:6px 0 0;letter-spacing:-.01em}
 select{width:100%;background:rgba(0,0,0,.35);color:var(--text);border:1px solid var(--edge);
   border-radius:8px;padding:8px 9px;font:500 12px/1 var(--mono);margin-top:4px;cursor:pointer}
 select:focus{outline:none;border-color:var(--edge-bright)}
-.flabel{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:11px 0 0;display:block}
+.leg .dot.ring{box-shadow:0 0 0 2px #39d98a}
+.chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.chip{font:600 11px/1 var(--mono);color:var(--mute);background:rgba(0,0,0,.3);
+  border:1px solid var(--edge);border-radius:7px;padding:6px 9px;cursor:pointer;transition:.13s;white-space:nowrap}
+.chip:hover{border-color:var(--edge-bright);color:var(--text)}
+.chip.on{background:var(--accent);color:#04201d;border-color:var(--accent)}
+.flabel{font:600 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--faint);margin:13px 0 0;display:block}
 
 /* ============================== RIGHT: LEGEND + SUMMARY ============================== */
 #right{position:fixed;top:14px;right:14px;z-index:15;width:208px;display:flex;flex-direction:column;gap:12px}
@@ -214,6 +220,7 @@ select:focus{outline:none;border-color:var(--edge-bright)}
     <h3><span class="ico"></span>Summary</h3>
     <div class="stat"><span class="k">Stations</span><span class="v" id="sStations">—</span></div>
     <div class="stat"><span class="k">Drivers</span><span class="v" id="sDrivers">—</span></div>
+    <div id="sFilterCap" style="display:none;font:600 10px/1.4 var(--mono);color:var(--accent);padding:2px 0 4px;text-align:right"></div>
     <div class="stat"><span class="k">Darkstores</span><span class="v" id="sDark">—</span></div>
     <div class="stat"><span class="k">H3 layer</span><span class="v sm" id="sH3layer">—</span></div>
     <div class="stat"><span class="k">Hexagons</span><span class="v" id="sHex">—</span></div>
@@ -235,9 +242,14 @@ select:focus{outline:none;border-color:var(--edge-bright)}
       <div class="leg"><span class="dot" style="background:var(--orange)"></span>E-Rickshaw</div>
     </div>
     <div class="leg-group">
-      <div class="leg-h">Other</div>
-      <div class="leg"><span class="hx" style="background:var(--accent)"></span>Cluster <small>sheet color</small></div>
-      <div class="leg"><span class="dot" style="background:var(--purple)"></span>Darkstore</div>
+      <div class="leg-h">Darkstores · green ring</div>
+      <div class="leg"><span class="dot ring" style="background:#8e44ff"></span>Zepto</div>
+      <div class="leg"><span class="dot ring" style="background:#ff8f00"></span>Instamart</div>
+      <div class="leg"><span class="dot ring" style="background:#ffcd00"></span>Blinkit</div>
+    </div>
+    <div class="leg-group">
+      <div class="leg-h">Clusters</div>
+      <div class="leg"><span class="hx" style="background:var(--accent)"></span>H3 cell <small>sheet color</small></div>
     </div>
   </div>
 </div>
@@ -281,6 +293,7 @@ select:focus{outline:none;border-color:var(--edge-bright)}
 </div>
 
 <script>
+
 /* =============================================================================
    BATTERY SMART · LIVE OPS GIS  —  application logic
    Modular, dependency-light (deck.gl + MapLibre + h3-js + PapaParse).
@@ -312,7 +325,9 @@ const CONFIG = {
     stationId: ["Station ID","StationID","station_id","Station Id","StationId","ID","Id"],
     driverId: ["Driver ID","DriverID","driver_id","Driver Id","DriverId","ID","Id"],
     city:  ["City","city","CITY"],
-    zone:  ["Zone","zone","ZONE","Region","region"]
+    zone:  ["Zone","zone","ZONE","Region","region"],
+    darkstoreName: ["Darkstore Name","DarkstoreName","Name","Store Name","StoreName","name","Darkstore","Store","Outlet","Outlet Name"],
+    brand: ["Brand","brand","Platform","platform","Company","company","Partner","partner","Darkstore Brand","Client"]
   }
 };
 
@@ -443,14 +458,30 @@ function detectLatestMonth(rows, field){
   return best;
 }
 
+/** Read cluster color: try named field first, else column K (11th column, index 10). */
+function clusterColor(row){
+  const named = pick(row, CONFIG.fields.color);
+  if (named) return toRGB(named);
+  const keys = Object.keys(row);
+  if (keys.length > 10){ const k = row[keys[10]]; if (k) return toRGB(k); }  // column K
+  return [79,209,197];
+}
+
 /** Normalise H3 rows → {h3, color[rgb], props, da[]} keeping ALL original props for popups. */
 function parseH3(rows){
+  if (!rows || !rows.length) return [];
   const da = detectDAColumns(rows);
-  return rows.map(r => {
-    const h3 = pick(r, CONFIG.fields.h3);
-    if (!h3 || !(window.h3 && h3.isValidCell ? h3.isValidCell(h3) : true)) {}
-    return { h3:String(h3||"").trim(), color: toRGB(pick(r, CONFIG.fields.color)), props:r, da };
-  }).filter(d => d.h3 && window.h3.isValidCell(d.h3));
+  const out = [];
+  for (const r of rows){
+    const raw = pick(r, CONFIG.fields.h3);
+    const h3 = String(raw || "").trim();
+    if (!h3) continue;
+    let valid = false;
+    try { valid = window.h3.isValidCell(h3); } catch(e){ valid = false; }
+    if (!valid) continue;
+    out.push({ h3, color: clusterColor(r), props:r, da });
+  }
+  return out;
 }
 
 /** Normalise point rows → {lng,lat,props}. Invalid coords dropped. */
@@ -478,6 +509,26 @@ const VEHICLE_COLORS = { "e-2w":[74,158,255], "e2w":[74,158,255], "2w":[74,158,2
   "e-rickshaw":[255,159,67], "erickshaw":[255,159,67], "rickshaw":[255,159,67] };
 function vehicleColor(v){ const k=String(v||"").toLowerCase().replace(/[\s_]/g,"-"); return VEHICLE_COLORS[k] || VEHICLE_COLORS[k.replace(/-/g,"")] || [150,160,175]; }
 
+/* darkstore brand → recognised colors; matched by substring so "Zepto Store 12" still works */
+const BRAND_COLORS = [
+  [/zepto/i,        [142,68,255]],   // violet
+  [/instamart|swiggy/i, [255,143,0]],// orange
+  [/blink(it)?|grofers/i, [255,205,0]],// yellow
+  [/bigbasket|bbnow/i, [132,189,0]], // green-ish (kept distinct)
+  [/dunzo/i,        [0,200,180]],
+  [/flipkart/i,     [40,116,240]],
+  [/amazon/i,       [255,153,0]]
+];
+function darkstoreColor(name){
+  const s = String(name||"");
+  for (const [re,c] of BRAND_COLORS) if (re.test(s)) return c;
+  return [169,114,255]; // default violet-grey
+}
+/** Resolve a human label for a darkstore row: name field → brand field → "Darkstore". */
+function darkstoreLabel(props){
+  return pick(props, CONFIG.fields.darkstoreName) || pick(props, CONFIG.fields.brand) || "Darkstore";
+}
+
 function buildLayers(){
   const L = [];
   const sel = STATE.selected;
@@ -485,14 +536,13 @@ function buildLayers(){
   /* ---- H3 hexagons (only the active resolution) ---- */
   if (STATE.layersOn.h3){
     const data = parseH3(STATE.raw[STATE.activeH3]);
-    $("#sHex").textContent = fmt(data.length);
     L.push(new deck.H3HexagonLayer({
       id: "h3-" + STATE.activeH3,
       data, pickable:true, wireframe:false, filled:true, extruded:false,
-      stroked:true, lineWidthMinPixels:1,
+      stroked:true, lineWidthUnits:"pixels", lineWidthMinPixels:1,
       getHexagon: d => d.h3,
-      getFillColor: d => { const a = (sel && sel.kind==="cluster" && sel.id===d.h3) ? 235 : 153; return [d.color[0],d.color[1],d.color[2],a]; },
-      getLineColor: d => (sel && sel.kind==="cluster" && sel.id===d.h3) ? [255,255,255,255] : [0,0,0,160],
+      getFillColor: d => { const a = (sel && sel.kind==="cluster" && sel.id===d.h3) ? 230 : 153; return [d.color[0],d.color[1],d.color[2],a]; },
+      getLineColor: d => (sel && sel.kind==="cluster" && sel.id===d.h3) ? [255,255,255,255] : [12,18,28,200],
       getLineWidth: d => (sel && sel.kind==="cluster" && sel.id===d.h3) ? 3 : 1,
       updateTriggers: { getFillColor:[sel&&sel.id], getLineColor:[sel&&sel.id], getLineWidth:[sel&&sel.id] },
       onClick: info => info.object && selectFeature("cluster", info.object.h3, info.object),
@@ -531,18 +581,19 @@ function buildLayers(){
     }));
   }
 
-  /* ---- Darkstores ---- */
+  /* ---- Darkstores (brand-colored, green outline, named) ---- */
   if (STATE.layersOn.darkstores){
     const data = parsePoints(STATE.raw.darkstores);
     L.push(new deck.ScatterplotLayer({
       id:"darkstores", data, pickable:true, stroked:true, filled:true,
-      radiusUnits:"pixels", radiusMinPixels:5, radiusMaxPixels:12, lineWidthMinPixels:1.5,
+      radiusUnits:"pixels", radiusMinPixels:5, radiusMaxPixels:13, lineWidthUnits:"pixels", lineWidthMinPixels:2,
       getPosition: d => [d.lng, d.lat], getRadius: 8,
-      getFillColor: d => { const on = sel&&sel.kind==="darkstore"&&sel.object===d; return [169,114,255, on?255:210]; },
-      getLineColor: d => (sel&&sel.kind==="darkstore"&&sel.object===d) ? [255,255,255,255] : [255,255,255,90],
-      updateTriggers:{ getFillColor:[sel&&sel.object], getLineColor:[sel&&sel.object] },
-      onClick: info => info.object && selectFeature("darkstore", "Darkstore", info.object),
-      onHover: info => hover(info, info.object ? `<b>Darkstore</b>` : null)
+      getFillColor: d => { const c = darkstoreColor(darkstoreLabel(d.props)); const on = sel&&sel.kind==="darkstore"&&sel.object===d; return [c[0],c[1],c[2], on?255:215]; },
+      getLineColor: d => (sel&&sel.kind==="darkstore"&&sel.object===d) ? [255,255,255,255] : [57,217,138,235], // green outline
+      getLineWidth: d => (sel&&sel.kind==="darkstore"&&sel.object===d) ? 3 : 2,
+      updateTriggers:{ getFillColor:[sel&&sel.object], getLineColor:[sel&&sel.object], getLineWidth:[sel&&sel.object] },
+      onClick: info => info.object && selectFeature("darkstore", darkstoreLabel(info.object.props), info.object),
+      onHover: info => hover(info, info.object ? `<b>${esc(darkstoreLabel(info.object.props))}</b>` : null)
     }));
   }
 
@@ -566,6 +617,7 @@ function buildFilterUI(){
   const mount = $("#filterMount");
   if (!drivers.length){ mount.innerHTML = `<div class="sub">No driver data.</div>`; return; }
 
+  // detect month field
   STATE.monthField = (CONFIG.fields.month.find(f => drivers[0][f] !== undefined)) ||
                      Object.keys(drivers[0]).find(k => CONFIG.fields.month.map(x=>x.toLowerCase()).includes(k.toLowerCase())) || null;
   STATE.latestMonth = detectLatestMonth(drivers, STATE.monthField);
@@ -573,55 +625,102 @@ function buildFilterUI(){
   const uniques = (cands) => {
     const f = cands.find(c => drivers.some(r => r[c] !== undefined && r[c] !== ""));
     if (!f) return null;
-    const set = [...new Set(drivers.map(r => r[f]).filter(v => v !== undefined && v !== ""))].sort();
+    const set = [...new Set(drivers.map(r => r[f]).filter(v => v !== undefined && v !== ""))];
     return { field:f, values:set };
   };
 
+  // all months sorted newest → oldest
+  const MON = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+  const mrank = (s) => { const m=String(s).match(/([A-Za-z]{3,})[^\d]*(\d{2,4})/); if(!m) return -1;
+    const mo=MON[m[1].slice(0,3).toLowerCase()]??0; let y=+m[2]; if(y<100)y+=2000; return y*12+mo; };
+  let months = [];
+  if (STATE.monthField){
+    months = [...new Set(drivers.map(r => r[STATE.monthField]).filter(Boolean))].sort((a,b)=>mrank(b)-mrank(a));
+  }
+
   let html = "";
-  // Vehicle Type
+
+  // ---- MONTH (multi-select chips, all months + All) ----
+  if (months.length){
+    html += `<label class="flabel">Month <small style="color:var(--faint);font-weight:500">· multi-select</small></label>
+      <div class="chips" id="chipsMonth">
+        <button class="chip on" data-all="month">All</button>
+        ${months.map(m=>`<button class="chip" data-month="${esc(m)}">${esc(m)}</button>`).join("")}
+      </div>`;
+  }
+
+  // ---- VEHICLE TYPE (multi-select chips) ----
   const veh = uniques(CONFIG.fields.vehicle);
-  if (veh){
-    html += `<label class="flabel">Vehicle Type</label><select data-f="${esc(veh.field)}">
-      <option value="">All</option>${veh.values.map(v=>`<option>${esc(v)}</option>`).join("")}</select>`;
+  if (veh && veh.values.length){
+    STATE.vehicleField = veh.field;
+    html += `<label class="flabel">Vehicle Type <small style="color:var(--faint);font-weight:500">· multi-select</small></label>
+      <div class="chips" id="chipsVehicle">
+        <button class="chip on" data-all="vehicle">All</button>
+        ${veh.values.sort().map(v=>`<button class="chip" data-vehicle="${esc(v)}">${esc(v)}</button>`).join("")}
+      </div>`;
   }
-  // Month → Latest / Older
-  if (STATE.monthField && STATE.latestMonth){
-    html += `<label class="flabel">Month</label><select data-f="__month__">
-      <option value="">All months</option>
-      <option value="latest">Latest · ${esc(STATE.latestMonth)}</option>
-      <option value="older">Older months</option></select>`;
-  }
-  // City / Zone (auto)
+
+  // ---- CITY / ZONE (single dropdown each, auto) ----
   for (const c of [CONFIG.fields.city, CONFIG.fields.zone]){
     const u = uniques(c);
-    if (u && u.values.length > 1 && u.values.length <= 60){
-      const label = u.field;
-      html += `<label class="flabel">${esc(label)}</label><select data-f="${esc(u.field)}">
-        <option value="">All</option>${u.values.map(v=>`<option>${esc(v)}</option>`).join("")}</select>`;
+    if (u && u.values.length > 1 && u.values.length <= 200){
+      html += `<label class="flabel">${esc(u.field)}</label><select data-f="${esc(u.field)}">
+        <option value="">All</option>${u.values.sort().map(v=>`<option>${esc(v)}</option>`).join("")}</select>`;
     }
   }
+
   mount.innerHTML = html || `<div class="sub">No filterable fields detected.</div>`;
 
+  // wire month chips
+  wireChipGroup("#chipsMonth", "months", "month");
+  // wire vehicle chips
+  wireChipGroup("#chipsVehicle", "vehicles", "vehicle");
+  // wire city/zone dropdowns
   mount.querySelectorAll("select").forEach(sel => sel.addEventListener("change", e => {
     const f = e.target.dataset.f, v = e.target.value;
     if (v === "") delete STATE.filters[f]; else STATE.filters[f] = v;
-    redraw();
+    redraw(); updateSummary();
   }));
 }
 
-function applyDriverFilters(points){
-  const f = STATE.filters; const keys = Object.keys(f);
-  if (!keys.length) return points;
-  return points.filter(p => keys.every(k => {
-    const val = f[k];
-    if (k === "__month__"){
-      const mv = p.props[STATE.monthField];
-      if (val === "latest") return mv === STATE.latestMonth;
-      if (val === "older")  return mv !== STATE.latestMonth;
-      return true;
+/** Multi-select chip group: "All" clears the set; individual chips toggle membership. */
+function wireChipGroup(sel, stateKey, attr){
+  const box = document.querySelector(sel);
+  if (!box) return;
+  if (!STATE.multi) STATE.multi = {};
+  STATE.multi[stateKey] = STATE.multi[stateKey] || new Set();   // empty set = "All"
+  box.querySelectorAll(".chip").forEach(chip => chip.addEventListener("click", () => {
+    const set = STATE.multi[stateKey];
+    if (chip.dataset.all !== undefined){
+      set.clear();                                              // All → clear filter
+    } else {
+      const val = chip.dataset[attr];
+      if (set.has(val)) set.delete(val); else set.add(val);
     }
-    return String(p.props[k]) === String(val);
+    // repaint chip states
+    const allBtn = box.querySelector("[data-all]");
+    if (set.size === 0){ box.querySelectorAll(".chip").forEach(c=>c.classList.remove("on")); allBtn.classList.add("on"); }
+    else { allBtn.classList.remove("on");
+      box.querySelectorAll(".chip").forEach(c => { if(c.dataset.all!==undefined) return;
+        c.classList.toggle("on", set.has(c.dataset[attr])); }); }
+    redraw(); updateSummary();
   }));
+}
+
+/** Filter driver points by multi-select month set, multi-select vehicle set, and city/zone dropdowns. */
+function applyDriverFilters(points){
+  const m = (STATE.multi && STATE.multi.months) || new Set();
+  const v = (STATE.multi && STATE.multi.vehicles) || new Set();
+  const drops = STATE.filters || {};
+  const dropKeys = Object.keys(drops);
+  if (!m.size && !v.size && !dropKeys.length) return points;
+
+  return points.filter(p => {
+    if (m.size && STATE.monthField && !m.has(String(p.props[STATE.monthField]))) return false;
+    if (v.size && STATE.vehicleField && !v.has(String(p.props[STATE.vehicleField]))) return false;
+    for (const k of dropKeys){ if (String(p.props[k]) !== String(drops[k])) return false; }
+    return true;
+  });
 }
 
 /* ============================== 7. POPUP / 1. INSPECTOR ============================== */
@@ -704,16 +803,44 @@ function hover(info, html){
 
 /* ============================== 8. LEGEND — static in HTML, counts updated here ============================== */
 function updateSummary(){
-  $("#sStations").textContent = fmt(parsePoints(STATE.raw.stations).length);
-  $("#sDrivers").textContent  = fmt(applyDriverFilters(parsePoints(STATE.raw.drivers)).length);
-  $("#sDark").textContent     = fmt(parsePoints(STATE.raw.darkstores).length);
+  const stationsN = parsePoints(STATE.raw.stations).length;
+  const darkN     = parsePoints(STATE.raw.darkstores).length;
+  const driversAll = parsePoints(STATE.raw.drivers);
+  const driversShown = applyDriverFilters(driversAll);
+  const h3N = parseH3(STATE.raw[STATE.activeH3]).length;
+
+  // each summary line reflects whether its layer is on; drivers reflects the filter selection
+  $("#sStations").textContent = STATE.layersOn.stations ? fmt(stationsN) : "off";
+  $("#sDrivers").textContent  = STATE.layersOn.drivers
+      ? (driversShown.length === driversAll.length ? fmt(driversShown.length)
+         : `${fmt(driversShown.length)} / ${fmt(driversAll.length)}`)
+      : "off";
+  $("#sDark").textContent     = STATE.layersOn.darkstores ? fmt(darkN) : "off";
   $("#sH3layer").textContent  = STATE.activeH3 === "h3id7" ? "H3ID7" : "H3ID6";
+  $("#sHex").textContent      = STATE.layersOn.h3 ? fmt(h3N) : "off";
   $("#sTime").textContent     = hhmmss();
+
+  // active-filter caption under the drivers line
+  const cap = filterCaption();
+  const capEl = $("#sFilterCap");
+  if (capEl){ capEl.textContent = cap; capEl.style.display = cap ? "block" : "none"; }
+
+  // layer-panel counts (always show true totals so user knows what's available)
   $("#ctH3a").textContent = fmt(parseH3(STATE.raw.h3id7).length);
   $("#ctH3b").textContent = fmt(parseH3(STATE.raw.h3id6).length);
-  $("#ctStations").textContent = fmt(parsePoints(STATE.raw.stations).length);
-  $("#ctDrivers").textContent  = fmt(parsePoints(STATE.raw.drivers).length);
-  $("#ctDark").textContent     = fmt(parsePoints(STATE.raw.darkstores).length);
+  $("#ctStations").textContent = fmt(stationsN);
+  $("#ctDrivers").textContent  = fmt(driversShown.length);
+  $("#ctDark").textContent     = fmt(darkN);
+}
+
+/** Human-readable caption of active driver filters, e.g. "E-Rickshaw · Apr 2026 · Delhi". */
+function filterCaption(){
+  const parts = [];
+  const m = STATE.multi && STATE.multi.months, v = STATE.multi && STATE.multi.vehicles;
+  if (v && v.size) parts.push([...v].join(", "));
+  if (m && m.size) parts.push([...m].join(", "));
+  for (const [k,val] of Object.entries(STATE.filters||{})) parts.push(val);
+  return parts.join(" · ");
 }
 
 /* ============================== 9. SEARCH CONTROLLER ============================== */
@@ -727,31 +854,57 @@ function goToCoord(){
 }
 function clearSearch(){ STATE.searchMarker=null; $("#qLat").value=$("#qLng").value=$("#qSearch").value=""; closeInspector(); redraw(); }
 
-/** Live search by id / city / zone across all datasets; fly to first match + select. */
+/** Live search across stations, drivers, clusters, cities/zones.
+    Priority: exact id/H3 → partial id → city/zone (zooms to fit all matches). */
 function liveSearch(q){
   q = q.trim().toLowerCase(); if (!q) return;
-  const tryset = [
+
+  const idSets = [
     ["station", STATE.raw.stations, CONFIG.fields.stationId],
     ["driver",  STATE.raw.drivers,  CONFIG.fields.driverId],
     ["cluster", STATE.raw.h3id7,    CONFIG.fields.h3],
     ["cluster", STATE.raw.h3id6,    CONFIG.fields.h3]
   ];
-  // id / h3 match
-  for (const [kind, rows, idFields] of tryset){
+
+  // 1) exact id / H3 match
+  for (const [kind, rows, idFields] of idSets)
     for (const r of rows){
       const idv = String(pick(r, idFields) ?? "").toLowerCase();
-      if (idv && idv === q){
-        return focusRow(kind, r);
+      if (idv && idv === q) return focusRow(kind, r);
+    }
+
+  // 2) partial id match
+  for (const [kind, rows, idFields] of idSets)
+    for (const r of rows){
+      const idv = String(pick(r, idFields) ?? "").toLowerCase();
+      if (idv && idv.includes(q)) return focusRow(kind, r);
+    }
+
+  // 3) city / zone match → collect every matching point and fit bounds
+  const hits = [];
+  let hitKind = null, hitField = null;
+  for (const [kind, rows] of [["driver",STATE.raw.drivers],["station",STATE.raw.stations]]){
+    for (const r of rows){
+      const city = String(pick(r,CONFIG.fields.city) ?? "").toLowerCase();
+      const zone = String(pick(r,CONFIG.fields.zone) ?? "").toLowerCase();
+      if ((city && city.includes(q)) || (zone && zone.includes(q))){
+        const lat = num(pick(r,CONFIG.fields.lat)), lng = num(pick(r,CONFIG.fields.lng));
+        if (isLat(lat)&&isLng(lng)){ hits.push([lng,lat]); hitKind=hitKind||kind; hitField = city.includes(q)?"city":"zone"; }
       }
     }
   }
-  // city / zone partial match across drivers+stations
-  for (const rows of [STATE.raw.drivers, STATE.raw.stations]){
-    for (const r of rows){
-      const cz = String(pick(r,CONFIG.fields.city) ?? "").toLowerCase() + " " + String(pick(r,CONFIG.fields.zone) ?? "").toLowerCase();
-      if (cz.includes(q)){ return focusRow(rows===STATE.raw.drivers?"driver":"station", r); }
+  if (hits.length){
+    STATE.userMoved = true;
+    if (hits.length === 1){ map.flyTo({center:hits[0],zoom:12,duration:1100}); }
+    else {
+      let minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+      for (const [x,y] of hits){ minX=Math.min(minX,x);maxX=Math.max(maxX,x);minY=Math.min(minY,y);maxY=Math.max(maxY,y); }
+      map.fitBounds([[minX,minY],[maxX,maxY]],{padding:120,duration:1100,maxZoom:13});
     }
+    toast(`Found <b>${hits.length}</b> in ${esc(q)} (${hitField})`,"ok",2600);
+    return;
   }
+
   toast("No match for <b>"+esc(q)+"</b>","warn");
 }
 function focusRow(kind, r){
@@ -760,7 +913,7 @@ function focusRow(kind, r){
     const h3 = String(pick(r,CONFIG.fields.h3)).trim();
     const [lat,lng] = window.h3.cellToLatLng(h3);
     map.flyTo({ center:[lng,lat], zoom:11, duration:1100 });
-    selectFeature("cluster", h3, { h3, color:toRGB(pick(r,CONFIG.fields.color)), props:r, da:detectDAColumns([r]) });
+    selectFeature("cluster", h3, { h3, color:clusterColor(r), props:r, da:detectDAColumns([r]) });
   } else {
     const lat = num(pick(r,CONFIG.fields.lat)), lng = num(pick(r,CONFIG.fields.lng));
     if (isLat(lat)&&isLng(lng)) map.flyTo({ center:[lng,lat], zoom:13, duration:1100 });
@@ -883,7 +1036,7 @@ async function boot(){
   }
 
   // ---- deck.gl overlay synced to maplibre ----
-  deckOverlay = new deck.MapboxOverlay({ interleaved:true, layers:[] });
+  deckOverlay = new deck.MapboxOverlay({ interleaved:false, layers:[] });
   map.addControl(deckOverlay);
 
   // mark manual camera movement (disables auto-fit)
@@ -912,10 +1065,10 @@ async function boot(){
 /* ============================== UI WIRING ============================== */
 function wireUI(){
   // layer toggles
-  $("#lyH3").addEventListener("change", e => { STATE.layersOn.h3=e.target.checked; redraw(); writeHash(); });
-  $("#lyStations").addEventListener("change", e => { STATE.layersOn.stations=e.target.checked; redraw(); writeHash(); });
-  $("#lyDrivers").addEventListener("change", e => { STATE.layersOn.drivers=e.target.checked; redraw(); writeHash(); });
-  $("#lyDark").addEventListener("change", e => { STATE.layersOn.darkstores=e.target.checked; redraw(); writeHash(); });
+  $("#lyH3").addEventListener("change", e => { STATE.layersOn.h3=e.target.checked; redraw(); updateSummary(); writeHash(); });
+  $("#lyStations").addEventListener("change", e => { STATE.layersOn.stations=e.target.checked; redraw(); updateSummary(); writeHash(); });
+  $("#lyDrivers").addEventListener("change", e => { STATE.layersOn.drivers=e.target.checked; redraw(); updateSummary(); writeHash(); });
+  $("#lyDark").addEventListener("change", e => { STATE.layersOn.darkstores=e.target.checked; redraw(); updateSummary(); writeHash(); });
 
   // H3 resolution radios (preserve viewport)
   $("#h3r7").addEventListener("change", () => { if($("#h3r7").checked){ STATE.activeH3="h3id7"; redraw(); updateSummary(); writeHash(); }});
@@ -957,6 +1110,7 @@ function syncMini(){
 /* ---- go ---- */
 window.addEventListener("error", e => console.error("runtime:", e.message));
 boot().catch(err => { console.error(err); $("#loadTxt").textContent = "Init failed — see console"; toast("Startup error: "+esc(err.message),"err",8000); });
+
 
 </script>
 </body>
