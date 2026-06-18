@@ -9,7 +9,6 @@
 <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet" />
 <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://unpkg.com/deck.gl@9.0.38/dist.min.js"></script>
-<script src="https://unpkg.com/@deck.gl/geo-layers@9.0.38/dist.min.js"></script>
 <script src="https://unpkg.com/h3-js@4.1.0/dist/h3-js.umd.js"></script>
 <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
 
@@ -480,7 +479,9 @@ function parseH3(rows){
     let valid = false;
     try { valid = window.h3.isValidCell(h3); } catch(e){ valid = false; }
     if (!valid) continue;
-    out.push({ h3, color: clusterColor(r), props:r, da });
+    let polygon = [];
+    try { polygon = window.h3.cellToBoundary(h3, true); } catch(e){}  // [lng,lat] ring
+    out.push({ h3, color: clusterColor(r), props:r, da, polygon });
   }
   return out;
 }
@@ -534,45 +535,25 @@ function buildLayers(){
   const L = [];
   const sel = STATE.selected;
 
-  /* ---- H3 hexagons (only the active resolution) ---- */
+  /* ---- H3 hexagons → rendered as polygons from h3-js boundaries (core PolygonLayer) ---- */
   if (STATE.layersOn.h3){
-    const data = parseH3(STATE.raw[STATE.activeH3]);
-    const isSel = d => sel && sel.kind==="cluster" && sel.id===d.h3;
-    const fill  = d => { const a = isSel(d) ? 230 : 153; return [d.color[0],d.color[1],d.color[2],a]; };
-    const line  = d => isSel(d) ? [255,255,255,255] : [12,18,28,200];
-    const lw    = d => isSel(d) ? 3 : 1;
-
-    // locate H3HexagonLayer across possible globals (core bundle, geo-layers bundle)
-    const H3Layer = (window.deck && deck.H3HexagonLayer)
-                 || (window.deck && deck.geoLayers && deck.geoLayers.H3HexagonLayer)
-                 || (window.H3HexagonLayer)
-                 || null;
-
-    if (H3Layer){
-      L.push(new H3Layer({
-        id:"h3-"+STATE.activeH3, data, pickable:true, wireframe:false, filled:true, extruded:false,
-        stroked:true, lineWidthUnits:"pixels", lineWidthMinPixels:1,
-        getHexagon: d => d.h3, getFillColor: fill, getLineColor: line, getLineWidth: lw,
-        updateTriggers:{ getFillColor:[sel&&sel.id], getLineColor:[sel&&sel.id], getLineWidth:[sel&&sel.id] },
-        onClick: info => info.object && selectFeature("cluster", info.object.h3, info.object),
-        onHover: info => hover(info, info.object ? `<b>Cluster</b> ${info.object.h3}` : null)
-      }));
-    } else {
-      // FALLBACK — H3HexagonLayer not in bundle: build polygons from h3-js boundaries
-      const poly = data.map(d => {
-        let ring = [];
-        try { ring = window.h3.cellToBoundary(d.h3, true); } catch(e){}  // [lng,lat] pairs
-        return { ...d, polygon: ring };
-      }).filter(d => d.polygon.length >= 3);
-      L.push(new deck.PolygonLayer({
-        id:"h3poly-"+STATE.activeH3, data:poly, pickable:true, stroked:true, filled:true,
-        lineWidthUnits:"pixels", lineWidthMinPixels:1,
-        getPolygon: d => d.polygon, getFillColor: fill, getLineColor: line, getLineWidth: lw,
-        updateTriggers:{ getFillColor:[sel&&sel.id], getLineColor:[sel&&sel.id], getLineWidth:[sel&&sel.id] },
-        onClick: info => info.object && selectFeature("cluster", info.object.h3, info.object),
-        onHover: info => hover(info, info.object ? `<b>Cluster</b> ${info.object.h3}` : null)
-      }));
+    const data = parseH3(STATE.raw[STATE.activeH3]).filter(d => d.polygon && d.polygon.length >= 3);
+    if (!data.length){
+      console.warn("[H3] no renderable hexagons for", STATE.activeH3,
+                   "— raw rows:", (STATE.raw[STATE.activeH3]||[]).length);
     }
+    const isSel = d => sel && sel.kind==="cluster" && sel.id===d.h3;
+    L.push(new deck.PolygonLayer({
+      id:"h3-"+STATE.activeH3, data,
+      pickable:true, stroked:true, filled:true,
+      lineWidthUnits:"pixels", lineWidthMinPixels:1, getLineWidth: d => isSel(d) ? 3 : 1,
+      getPolygon: d => d.polygon,
+      getFillColor: d => { const a = isSel(d) ? 235 : 165; return [d.color[0],d.color[1],d.color[2],a]; },
+      getLineColor: d => isSel(d) ? [255,255,255,255] : [10,16,26,210],
+      updateTriggers:{ getFillColor:[sel&&sel.id], getLineColor:[sel&&sel.id], getLineWidth:[sel&&sel.id] },
+      onClick: info => info.object && selectFeature("cluster", info.object.h3, info.object),
+      onHover: info => hover(info, info.object ? `<b>Cluster</b> ${info.object.h3}` : null)
+    }));
   }
 
   /* ---- Active stations ---- */
@@ -1042,6 +1023,13 @@ function hideLoader(){ const l=$("#loader"); l.classList.add("hide"); setTimeout
 
 /* ============================== 12. BOOTSTRAP ============================== */
 async function boot(){
+  // ---- diagnostics: confirm required libs/layers are present ----
+  console.log("[init] deck:", !!window.deck,
+              "| PolygonLayer:", !!(window.deck && deck.PolygonLayer),
+              "| ScatterplotLayer:", !!(window.deck && deck.ScatterplotLayer),
+              "| h3:", !!window.h3, "| maplibre:", !!window.maplibregl);
+  if (!(window.deck && deck.PolygonLayer)) toast("deck.PolygonLayer missing — CDN may be blocked","err",9000);
+
   // ---- base map ----
   const restored = readHash();
   const iv = CONFIG.initialView;
