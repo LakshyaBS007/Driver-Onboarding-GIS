@@ -781,7 +781,7 @@ function openInspector(kind, id, object){
 function nearbySection(h3id){
   try{
     const [clat, clng] = window.h3.cellToLatLng(h3id);
-    const R = 6; // km radius
+    const R = 1.5; // km radius
     const within = (arr, fld) => parsePoints(arr).filter(p => haversine(clat,clng,p.lat,p.lng) <= R).length;
     const st = within(STATE.raw.stations);
     const ds = within(STATE.raw.darkstores);
